@@ -15,18 +15,14 @@
  */
 
 import {CSS} from '../../../build/amp-next-page-0.1.css';
-import {MultidocManager} from '../../../src/runtime';
-import {
-  PositionObserverFidelity,
-} from '../../../src/service/position-observer/position-observer-worker';
+import {MultidocManager} from '../../../src/multidoc-manager';
+import {PositionObserverFidelity} from '../../../src/service/position-observer/position-observer-worker';
 import {Services} from '../../../src/services';
-import {dev} from '../../../src/log';
+import {VisibilityState} from '../../../src/visibility-state';
+import {dev, devAssert, user, userAssert} from '../../../src/log';
 import {dict} from '../../../src/utils/object';
-import {fetchDocument} from '../../../src/document-fetcher';
-import {getAmpdoc, getServiceForDoc} from '../../../src/service';
-import {
-  installPositionObserverServiceForDoc,
-} from '../../../src/service/position-observer/position-observer-impl';
+import {getAmpdoc} from '../../../src/service';
+import {installPositionObserverServiceForDoc} from '../../../src/service/position-observer/position-observer-impl';
 import {installStylesForDoc} from '../../../src/style-installer';
 import {layoutRectLtwh} from '../../../src/layout-rect';
 import {removeElement} from '../../../src/dom';
@@ -45,7 +41,7 @@ const TAG = 'amp-next-page';
 /**
  * @typedef {{
  *   ampUrl: string,
- *   amp: ?Object,
+ *   amp: (?../../../src/runtime.ShadowDoc | undefined),
  *   recUnit: {el: ?Element, isObserving: boolean},
  *   cancelled: boolean
  * }}
@@ -68,6 +64,9 @@ export class NextPageService {
     /** @private {?Element} */
     this.element_ = null;
 
+    /** @private {?../../../src/service/xhr-impl.Xhr} */
+    this.xhr_ = null;
+
     /** @private {?./config.AmpNextPageConfig} */
     this.config_ = null;
 
@@ -77,8 +76,8 @@ export class NextPageService {
     /** @private {?Element} */
     this.separator_ = null;
 
-    /** @private {?../../../src/service/resources-impl.Resources} */
-    this.resources_ = null;
+    /** @private {?../../../src/service/mutator-interface.MutatorInterface} */
+    this.mutator_ = null;
 
     /** @private {?MultidocManager} */
     this.multidocManager_ = null;
@@ -92,7 +91,7 @@ export class NextPageService {
     /** @private {?../../../src/service/navigation.Navigation} */
     this.navigation_ = null;
 
-    /** @private {?../../../src/service/viewport/viewport-impl.Viewport} */
+    /** @private {?../../../src/service/viewport/viewport-interface.ViewportInterface} */
     this.viewport_ = null;
 
     /** @private {?../../../src/service/position-observer/position-observer-impl.PositionObserver} */
@@ -106,9 +105,22 @@ export class NextPageService {
 
     /** @private {function(!Element): !Promise} */
     this.appendPageHandler_ = () => {};
+
+    /** @private {?../../../src/service/url-impl.Url} */
+    this.urlService_ = null;
+
+    /** @private {string} */
+    this.origin_ = '';
+
+    /** @private {?../../../src/service/history-impl.History} */
+    this.history_ = null;
   }
 
-  /** Returns true if the service has already been initialized. */
+  /**
+   * Returns true if the service has already been initialized.
+   *
+   * @return {*} TODO(#23582): Specify return type
+   */
   isActive() {
     return this.config_ !== null;
   }
@@ -134,6 +146,7 @@ export class NextPageService {
     this.win_ = win;
     this.separator_ = separator || this.createDefaultSeparator_();
     this.element_ = element;
+    this.xhr_ = Services.xhrFor(win);
 
     if (this.config_.hideSelectors) {
       this.hideSelector_ = this.config_.hideSelectors.join(',');
@@ -141,16 +154,37 @@ export class NextPageService {
 
     this.navigation_ = Services.navigationForDoc(ampDoc);
     this.viewport_ = Services.viewportForDoc(ampDoc);
-    this.resources_ = Services.resourcesForDoc(ampDoc);
-    this.multidocManager_ =
-        new MultidocManager(win, Services.ampdocServiceFor(win),
-            Services.extensionsFor(win), Services.timerFor(win));
+    this.mutator_ = Services.mutatorForDoc(ampDoc);
+    this.multidocManager_ = new MultidocManager(
+      win,
+      Services.ampdocServiceFor(win),
+      Services.extensionsFor(win),
+      Services.timerFor(win)
+    );
+    this.urlService_ = Services.urlForDoc(dev().assertElement(this.element_));
+    this.origin_ = this.urlService_.parse(ampDoc.getUrl()).origin;
+    this.history_ = Services.historyForDoc(ampDoc);
 
     installPositionObserverServiceForDoc(ampDoc);
-    this.positionObserver_ = getServiceForDoc(ampDoc, 'position-observer');
+    this.positionObserver_ = Services.positionObserverForDoc(element);
 
-    const documentRef =
-        createDocumentRef(win.document.location.href, win.document.title);
+    const {canonicalUrl} = Services.documentInfoForDoc(ampDoc);
+    const documentRef = createDocumentRef(
+      win.document.location.href,
+      win.document.title,
+      canonicalUrl
+    );
+
+    // TODO(wassgha): Untype as ShadowDoc and tighten the ShadowDoc type spec
+    /** @type {!../../../src/runtime.ShadowDoc} */
+    const amp = {
+      ampdoc: ampDoc,
+      url: win.document.location.href,
+      title: win.document.title,
+      canonicalUrl,
+    };
+    documentRef.amp = amp;
+
     this.documentRefs_.push(documentRef);
     this.activeDocumentRef_ = this.documentRefs_[0];
 
@@ -176,7 +210,7 @@ export class NextPageService {
    * Attach a ShadowDoc using the given document.
    * @param {!Element} shadowRoot Root element to attach the shadow document to.
    * @param {!Document} doc Document to attach.
-   * @return {?Object} Return value of {@link MultidocManager#attachShadowDoc}
+   * @return {?../../../src/runtime.ShadowDoc} Return value of {@link MultidocManager#attachShadowDoc}
    */
   attachShadowDoc_(shadowRoot, doc) {
     if (this.hideSelector_) {
@@ -194,14 +228,27 @@ export class NextPageService {
       removeElement(item);
     }
 
-    const amp =
-        this.multidocManager_.attachShadowDoc(shadowRoot, doc, '', {});
-    installStylesForDoc(amp.ampdoc, CSS, null, false, TAG);
+    /** @type {!../../../src/runtime.ShadowDoc} */
+    const amp = this.multidocManager_.attachShadowDoc(shadowRoot, doc, '', {
+      visibilityState: VisibilityState.PRERENDER,
+    });
+    const ampdoc = devAssert(amp.ampdoc);
+    installStylesForDoc(ampdoc, CSS, null, false, TAG);
 
-    const body = amp.ampdoc.getBody();
+    const body = ampdoc.getBody();
     body.classList.add('i-amphtml-next-page-document');
 
     return amp;
+  }
+
+  /**
+   * Creates an invisible element used to measure the position of the documents
+   * @return {!Element}
+   */
+  createMeasurer_() {
+    const measurer = this.win_.document.createElement('div');
+    measurer.classList.add('i-amphtml-next-page-measurer');
+    return measurer;
   }
 
   /**
@@ -225,6 +272,9 @@ export class NextPageService {
 
       const container = this.win_.document.createElement('div');
 
+      const measurer = this.createMeasurer_();
+      container.appendChild(measurer);
+
       const separator = this.separator_.cloneNode(true);
       separator.removeAttribute('separator');
       container.appendChild(separator);
@@ -238,11 +288,16 @@ export class NextPageService {
 
       const page = this.nextArticle_;
       this.appendPageHandler_(container).then(() => {
-        this.positionObserver_.observe(separator, PositionObserverFidelity.LOW,
-            position => this.positionUpdate_(page, position));
-        this.positionObserver_.observe(articleLinks,
-            PositionObserverFidelity.LOW,
-            unused => this.articleLinksPositionUpdate_(documentRef));
+        this.positionObserver_.observe(
+          measurer,
+          PositionObserverFidelity.LOW,
+          position => this.positionUpdate_(page, position)
+        );
+        this.positionObserver_.observe(
+          articleLinks,
+          PositionObserverFidelity.LOW,
+          unused => this.articleLinksPositionUpdate_(documentRef)
+        );
       });
 
       // Don't fetch the next article if we've rendered the maximum on screen.
@@ -252,36 +307,63 @@ export class NextPageService {
       }
 
       this.nextArticle_++;
-      fetchDocument(/** @type {!Window} */ (this.win_), next.ampUrl, {ampCors: false})
-          .then(doc => new Promise((resolve, reject) => {
-            if (documentRef.cancelled) {
-              // User has reached the end of the document already, don't render.
-              resolve();
-              return;
-            }
-
-            if (documentRef.recUnit.isObserving) {
-              this.positionObserver_.unobserve(articleLinks);
-              documentRef.recUnit.isObserving = true;
-            }
-            this.resources_.mutateElement(container, () => {
-              try {
-                const amp = this.attachShadowDoc_(shadowRoot, doc);
-                documentRef.amp = amp;
-
-                toggle(dev().assertElement(documentRef.recUnit.el), false);
-                this.documentQueued_ = false;
+      this.xhr_
+        .fetch(next.ampUrl, {ampCors: false})
+        .then(response => {
+          // Update AMP URL in case we were redirected.
+          documentRef.ampUrl = response.url;
+          const url = this.urlService_.parse(response.url);
+          userAssert(
+            url.origin === this.origin_,
+            'ampUrl resolved to a different origin from the origin of the ' +
+              'current document'
+          );
+          return response.text();
+        })
+        .then(html => {
+          const doc = this.win_.document.implementation.createHTMLDocument('');
+          doc.open();
+          doc.write(html);
+          doc.close();
+          return doc;
+        })
+        .then(
+          doc =>
+            new Promise((resolve, reject) => {
+              if (documentRef.cancelled) {
+                // User has reached the end of the document already, don't render.
                 resolve();
-              } catch (e) {
-                reject(e);
+                return;
               }
-            });
-          }),
-          e => dev().error(TAG, `failed to fetch ${next.ampUrl}`, e))
-          .catch(e => dev().error(TAG,
-              `failed to attach shadow document for ${next.ampUrl}`, e))
-          // The new page may be short and the next may already need fetching.
-          .then(() => this.scrollHandler_());
+
+              if (documentRef.recUnit.isObserving) {
+                this.positionObserver_.unobserve(articleLinks);
+                documentRef.recUnit.isObserving = true;
+              }
+              this.mutator_.mutateElement(container, () => {
+                try {
+                  documentRef.amp = this.attachShadowDoc_(shadowRoot, doc);
+
+                  toggle(dev().assertElement(documentRef.recUnit.el), false);
+                  this.documentQueued_ = false;
+                  resolve();
+                } catch (e) {
+                  reject(e);
+                }
+              });
+            }),
+          e => user().error(TAG, 'failed to fetch %s', next.ampUrl, e)
+        )
+        .catch(e =>
+          dev().error(
+            TAG,
+            'failed to attach shadow document for %s',
+            next.ampUrl,
+            e
+          )
+        )
+        // The new page may be short and the next may already need fetching.
+        .then(() => this.scrollHandler_());
     }
   }
 
@@ -304,20 +386,29 @@ export class NextPageService {
     const element = doc.createElement('div');
     element.classList.add('amp-next-page-links');
 
-    while (article < this.config_.pages.length &&
-           article - nextPage < SEPARATOR_RECOS) {
+    while (
+      article < this.config_.pages.length &&
+      article - nextPage < SEPARATOR_RECOS
+    ) {
       const next = this.config_.pages[article];
       article++;
 
       const articleHolder = doc.createElement('a');
       articleHolder.href = next.ampUrl;
       articleHolder.classList.add(
-          'i-amphtml-reco-holder-article', 'amp-next-page-link');
+        'i-amphtml-reco-holder-article',
+        'amp-next-page-link'
+      );
       articleHolder.addEventListener('click', e => {
         this.triggerAnalyticsEvent_(
-            'amp-next-page-click', next.ampUrl, currentAmpUrl);
-        const a2a =
-            this.navigation_.navigateToAmpUrl(next.ampUrl, 'content-discovery');
+          'amp-next-page-click',
+          next.ampUrl,
+          currentAmpUrl
+        );
+        const a2a = this.navigation_.navigateToAmpUrl(
+          next.ampUrl,
+          'content-discovery'
+        );
         if (a2a) {
           // A2A is enabled, don't navigate the browser.
           e.preventDefault();
@@ -326,13 +417,17 @@ export class NextPageService {
 
       const imageElement = doc.createElement('div');
       imageElement.classList.add(
-          'i-amphtml-next-article-image', 'amp-next-page-image');
+        'i-amphtml-next-article-image',
+        'amp-next-page-image'
+      );
       setStyle(imageElement, 'background-image', `url(${next.image})`);
       articleHolder.appendChild(imageElement);
 
       const titleElement = doc.createElement('div');
       titleElement.classList.add(
-          'i-amphtml-next-article-title', 'amp-next-page-text');
+        'i-amphtml-next-article-title',
+        'amp-next-page-text'
+      );
 
       titleElement.textContent = next.title;
       articleHolder.appendChild(titleElement);
@@ -355,21 +450,25 @@ export class NextPageService {
     }
 
     const viewportSize = this.viewport_.getSize();
-    const viewportBox =
-        layoutRectLtwh(0, 0, viewportSize.width, viewportSize.height);
-    this.viewport_.getClientRectAsync(dev().assertElement(this.element_))
-        .then(elementBox => {
-          if (this.documentQueued_) {
-            return;
-          }
+    const viewportBox = layoutRectLtwh(
+      0,
+      0,
+      viewportSize.width,
+      viewportSize.height
+    );
+    this.viewport_
+      .getClientRectAsync(dev().assertElement(this.element_))
+      .then(elementBox => {
+        if (this.documentQueued_) {
+          return;
+        }
 
-          const prerenderHeight =
-              PRERENDER_VIEWPORT_COUNT * viewportSize.height;
-          if (elementBox.bottom - viewportBox.bottom < prerenderHeight) {
-            this.documentQueued_ = true;
-            this.appendNextArticle_();
-          }
-        });
+        const prerenderHeight = PRERENDER_VIEWPORT_COUNT * viewportSize.height;
+        if (elementBox.bottom - viewportBox.bottom < prerenderHeight) {
+          this.documentQueued_ = true;
+          this.appendNextArticle_();
+        }
+      });
   }
 
   /**
@@ -386,21 +485,28 @@ export class NextPageService {
       return;
     }
 
-    let documentRef;
+    let ref = this.documentRefs_[i];
     let analyticsEvent = '';
 
-    if (position.relativePos === 'top') {
-      documentRef = this.documentRefs_[i + 1];
-      analyticsEvent = 'amp-next-page-scroll';
-    } else if (position.relativePos === 'bottom') {
-      documentRef = this.documentRefs_[i];
-      analyticsEvent = 'amp-next-page-scroll-back';
+    switch (position.relativePos) {
+      case 'top':
+        ref = this.documentRefs_[i + 1];
+        analyticsEvent = 'amp-next-page-scroll';
+        break;
+      case 'bottom':
+        analyticsEvent = 'amp-next-page-scroll-back';
+        break;
+      default:
+        break;
     }
 
-    if (documentRef && documentRef.amp) {
-      this.triggerAnalyticsEvent_(analyticsEvent,
-          documentRef.ampUrl, this.activeDocumentRef_.ampUrl);
-      this.setActiveDocument_(documentRef);
+    if (ref && ref.amp) {
+      this.triggerAnalyticsEvent_(
+        analyticsEvent,
+        ref.ampUrl,
+        this.activeDocumentRef_.ampUrl
+      );
+      this.setActiveDocument_(ref);
     }
   }
 
@@ -415,25 +521,63 @@ export class NextPageService {
     documentRef.cancelled = true;
     if (documentRef.recUnit.isObserving) {
       this.positionObserver_.unobserve(
-          dev().assertElement(documentRef.recUnit.el));
+        dev().assertElement(documentRef.recUnit.el)
+      );
       documentRef.recUnit.isObserving = false;
     }
   }
 
   /**
    * Sets the specified document as active, updating the document title and URL.
-   * @param {!DocumentRef} documentRef Reference to the document to set as
-   *     active.
+   *
+   * @param {!DocumentRef} ref Reference to the document to be activated
    * @private
    */
-  setActiveDocument_(documentRef) {
-    const {amp} = documentRef;
-    this.win_.document.title = amp.title || '';
-    this.activeDocumentRef_ = documentRef;
-    this.setActiveDocumentInHistory_(documentRef);
+  setActiveDocument_(ref) {
+    this.documentRefs_.forEach(docRef => {
+      const {amp} = docRef;
+      // Update the title and history
+      if (docRef === ref) {
+        this.win_.document.title = amp.title || '';
+        this.activeDocumentRef_ = docRef;
+        this.setActiveDocumentInHistory_(docRef);
+        // Show the active document
+        this.setDocumentVisibility_(docRef, VisibilityState.VISIBLE);
+      } else {
+        // Hide other documents
+        this.setDocumentVisibility_(docRef, VisibilityState.HIDDEN);
+      }
+    });
 
-    // TODO(peterjosling): Send request to viewer with title/URL
     // TODO(emarchiori): Consider updating position fixed elements.
+  }
+
+  /**
+   * Manually overrides the document's visible state to the given state
+   *
+   * @param {!DocumentRef} ref Reference to the document to change
+   * @param {!../../../src/visibility-state.VisibilityState} visibilityState
+   * @private
+   */
+  setDocumentVisibility_(ref, visibilityState) {
+    // Prevent updating visibility of the host document
+    if (ref === this.documentRefs_[0]) {
+      return;
+    }
+
+    const ampDoc = ref.amp && ref.amp.ampdoc;
+
+    // Prevent hiding of documents that are not shadow docs
+    if (!ampDoc) {
+      return;
+    }
+
+    // Prevent hiding of documents that are being pre-rendered
+    if (!ampDoc.hasBeenVisible() && visibilityState == VisibilityState.HIDDEN) {
+      return;
+    }
+
+    ref.amp.setVisibilityState(visibilityState);
   }
 
   /**
@@ -441,14 +585,9 @@ export class NextPageService {
    * @private
    */
   setActiveDocumentInHistory_(documentRef) {
-    if (!this.win_.history || !this.win_.history.replaceState) {
-      return;
-    }
-
-    const urlService = Services.urlForDoc(dev().assertElement(this.element_));
-    const {title} = documentRef.amp;
-    const {pathname, search} = urlService.parse(documentRef.ampUrl);
-    this.win_.history.replaceState({}, title, pathname + search);
+    const {title, canonicalUrl} = documentRef.amp;
+    const {pathname, search} = this.urlService_.parse(documentRef.ampUrl);
+    this.history_.replace({title, url: pathname + search, canonicalUrl});
   }
 
   /**
@@ -472,10 +611,12 @@ export class NextPageService {
  * Creates a new {@link DocumentRef} for the specified URL.
  * @param {string} ampUrl AMP URL of the document.
  * @param {string=} title Document title, if known before loading.
+ * @param {string=} canonicalUrl Canonical URL of the page, if known before
+ *     loading.
  * @return {!DocumentRef} Ref object initialised with the given URL.
  */
-function createDocumentRef(ampUrl, title) {
-  const amp = (title) ? {title} : null;
+function createDocumentRef(ampUrl, title, canonicalUrl) {
+  const amp = title || canonicalUrl ? {title, canonicalUrl} : null;
   return {
     ampUrl,
     amp,

@@ -14,31 +14,43 @@
  * limitations under the License.
  */
 
-export const UPSCORE_CONFIG = /**@type {!JsonObject} */({
+import {jsonLiteral} from '../../../../src/json';
+
+const UPSCORE_CONFIG = jsonLiteral({
   'requests': {
     'host': 'https://hit-pool.upscore.com/amp?',
-    'basePrefix': 'u_id=${clientId(upscore)}&' +
-            'hit_id=${pageViewId}&' +
-            'scTop=${scrollTop}&' +
-            'scHeight=${scrollHeight}&' +
-            'vHeight=${viewportHeight}&' +
-            'domain=${domain}&' +
-            'load=${domInteractiveTime}&' +
-            'timespent=${totalEngagedTime}',
-    'initialHit': 'author=${author}&' +
-            'creator=${creator}&' +
-            'o_id=${object_id}&' +
-            'o_type=${object_type}&' +
-            'pubdate=${pubdate}&' +
-            'ref=${documentReferrer}&' +
-            'section=${section}&' +
-            'url=${ampdocUrl}&' +
-            'agent=${userAgent}&' +
-            'u_id=${clientId(upscore)}&' +
-            'location=${ampGeo(ISOCountry)}',
+    'basePrefix':
+      'u_id=${clientId(upscore)}&' +
+      'hit_id=${pageViewId}&' +
+      'scTop=${scrollTop}&' +
+      'scHeight=${scrollHeight}&' +
+      'vHeight=${viewportHeight}&' +
+      'domain=${domain}&' +
+      'load=${domInteractiveTime}&' +
+      'timespent=${totalEngagedTime}',
+    'initialHit':
+      'author=${author}&' +
+      'creator=${creator}&' +
+      'o_id=${object_id}&' +
+      'o_type=${object_type}&' +
+      'pubdate=${pubdate}&' +
+      'ref=${documentReferrer}&' +
+      'section=${section}&' +
+      'url=${canonicalUrl}&' +
+      'agent=${userAgent}&' +
+      'location=${ampGeo(ISOCountry)}&' +
+      'c_keys=${customKeys}&' +
+      'c_values=${customValues}',
     'finalbeat': '${host}${basePrefix}&type=final',
     'heartbeat': '${host}${basePrefix}&type=pulse',
     'pageview': '${host}${basePrefix}&${initialHit}&type=init',
+    'videoBase': '${host}url=${canonicalUrl}&video_id=${video_id}',
+    'videoTime': 'ct=${currentTime}&d=${duration}',
+    'video-play':
+      '${videoBase}&e=video_start&${videoTime}&video_name=${video_name}&video_thumb=${video_thumbnail}',
+    'video-pause': '${videoBase}&e=video_pause&${videoTime}',
+    'video-stop': '${videoBase}&e=video_stop&${videoTime}',
+    'video-info': '${videoBase}&e=video_position&${videoTime}',
   },
   'triggers': {
     'initHit': {
@@ -70,3 +82,5 @@ export const UPSCORE_CONFIG = /**@type {!JsonObject} */({
     'image': false,
   },
 });
+
+export {UPSCORE_CONFIG};

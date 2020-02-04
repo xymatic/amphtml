@@ -34,7 +34,7 @@ let ExtensionInfoDef;
  * @param {boolean=} opt_isLocalDev
  * @return {string}
  */
-function calculateScriptBaseUrl(location, opt_isLocalDev) {
+export function calculateScriptBaseUrl(location, opt_isLocalDev) {
   if (opt_isLocalDev) {
     let prefix = `${location.protocol}//${location.host}`;
     if (location.protocol == 'about:') {
@@ -53,8 +53,12 @@ function calculateScriptBaseUrl(location, opt_isLocalDev) {
  * @param {boolean=} opt_isLocalDev
  * @return {string}
  */
-export function calculateExtensionScriptUrl(location, extensionId,
-  opt_extensionVersion, opt_isLocalDev) {
+export function calculateExtensionScriptUrl(
+  location,
+  extensionId,
+  opt_extensionVersion,
+  opt_isLocalDev
+) {
   const base = calculateScriptBaseUrl(location, opt_isLocalDev);
   const rtv = getMode().rtvVersion;
   if (opt_extensionVersion == null) {
@@ -76,7 +80,11 @@ export function calculateExtensionScriptUrl(location, extensionId,
  * @return {string}
  */
 export function calculateEntryPointScriptUrl(
-  location, entryPoint, isLocalDev, opt_rtv) {
+  location,
+  entryPoint,
+  isLocalDev,
+  opt_rtv
+) {
   const base = calculateScriptBaseUrl(location, isLocalDev);
   if (opt_rtv) {
     return `${base}/rtv/${getMode().rtvVersion}/${entryPoint}.js`;
@@ -90,9 +98,8 @@ export function calculateEntryPointScriptUrl(
  * @return {!ExtensionInfoDef}
  */
 export function parseExtensionUrl(scriptUrl) {
-  const regex = /^(.*)\/(.*)-([0-9.]+)\.js$/i;
-  const matches = scriptUrl.match(regex);
-
+  // Note that the "(\.max)?" group only applies to local dev.
+  const matches = scriptUrl.match(/^(.*)\/(.*)-([0-9.]+|latest)(\.max)?\.js$/i);
   return {
     extensionId: matches ? matches[2] : undefined,
     extensionVersion: matches ? matches[3] : undefined,

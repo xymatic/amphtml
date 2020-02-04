@@ -25,12 +25,36 @@ import {getMode} from '../../../src/mode';
  * }
  */
 
-export const CMP_CONFIG = ({});
+export const CMP_CONFIG = {};
 
 if (getMode().test || getMode().localDev) {
   CMP_CONFIG['_ping_'] = {
     'consentInstanceId': '_ping_',
-    'checkConsentHref': 'http://localhost:8000/get-consent-v1',
-    'promptUISrc': 'http://ads.localhost:8000/test/manual/diy-consent.html',
+    'checkConsentHref': '/get-consent-v1',
+    'promptUISrc': '/examples/amp-consent/diy-consent.html',
   };
 }
+
+CMP_CONFIG['didomi'] = {
+  'consentInstanceId': 'didomi',
+  'checkConsentHref': 'https://api.privacy-center.org/amp/check-consent',
+  'promptUISrc': 'https://sdk-amp.privacy-center.org/loader.html',
+};
+
+CMP_CONFIG['sirdata'] = {
+  'consentInstanceId': 'sirdata',
+  'checkConsentHref': 'https://sddan.mgr.consensu.org/api/v1/public/amp/check',
+  'promptUISrc': 'https://ui.sddan.mgr.consensu.org/amp.html',
+};
+
+CMP_CONFIG['Marfeel'] = {
+  'consentInstanceId': 'Marfeel',
+  'checkConsentHref': 'https://live.mrf.io/cmp/consents/amp',
+  'promptUISrc': 'https://marfeel.mgr.consensu.org/amp/index.html',
+};
+
+CMP_CONFIG['SourcePoint'] = {
+  'consentInstanceId': 'SourcePoint',
+  'checkConsentHref': 'https://sourcepoint.mgr.consensu.org/consent/v2/amp',
+  'promptUISrc': 'https://amp.pm.sourcepoint.mgr.consensu.org/',
+};
